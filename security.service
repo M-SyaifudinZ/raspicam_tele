@@ -1,0 +1,18 @@
+[Unit]
+Description=Security System (Raspberry Pi)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/raspicam_tele
+EnvironmentFile=/home/pi/raspicam_tele/.env
+ExecStart=/home/pi/raspicam_tele/venv/bin/python main.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
