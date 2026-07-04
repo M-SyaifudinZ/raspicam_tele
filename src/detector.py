@@ -19,9 +19,19 @@ except ImportError:
         _TFLITE_OK = False
         logger.warning("tflite_runtime tidak tersedia — mock mode (fail-open ke PERSON)")
 
-PERSON_CLASS_ID = 0
-VEHICLE_CLASS_IDS = {1, 2, 3, 5, 7}  # bicycle, car, motorcycle, bus, truck
-VEHICLE_LABELS = {1: "Sepeda", 2: "Mobil", 3: "Motor", 5: "Bus", 7: "Truk"}
+# Numbering ini HARUS sama persis dengan urutan "names" di data.yaml model
+# custom ini (bukan COCO 80-kelas standar):
+#   names: ['bus', 'car', 'motorcycle', 'person', 'pickup', 'truck']
+#   index:    0      1         2           3         4         5
+PERSON_CLASS_ID = 3
+VEHICLE_CLASS_IDS = {0, 1, 2, 4, 5}  # bus, car, motorcycle, pickup, truck
+VEHICLE_LABELS = {
+    0: "Bus",
+    1: "Mobil",
+    2: "Motor",
+    4: "Pickup",
+    5: "Truk",
+}
 
 
 class DetectionType(Enum):
@@ -53,12 +63,27 @@ class YoloDetector:
             logger.warning("TFLite unavailable, skipping model load")
             return
         try:
-            self._interpreter = tflite.Interpreter(model_path=self._model_path)
+            # num_threads=4: Pi 4 punya 4 core, tapi default TFLite cuma
+            # pakai 1 thread kalau tidak diset -> inference jadi lambat.
+            self._interpreter = tflite.Interpreter(
+                model_path=self._model_path, num_threads=4
+            )
             self._interpreter.allocate_tensors()
-            self._input_idx = self._interpreter.get_input_details()[0]["index"]
-            self._output_idx = self._interpreter.get_output_details()[0]["index"]
+            input_details = self._interpreter.get_input_details()[0]
+            output_details = self._interpreter.get_output_details()[0]
+            self._input_idx = input_details["index"]
+            self._output_idx = output_details["index"]
             self._loaded = True
             logger.info(f"YOLO loaded: {self._model_path}")
+            # Log shape & dtype asli model supaya gampang ketahuan kalau
+            # tidak cocok sama asumsi di _preprocess/_postprocess di bawah
+            # (float32, input 640x640, output [1,84,8400]).
+            logger.info(
+                f"Model input: shape={input_details['shape']} dtype={input_details['dtype']}"
+            )
+            logger.info(
+                f"Model output: shape={output_details['shape']} dtype={output_details['dtype']}"
+            )
         except Exception as e:
             logger.error(f"Model load failed: {e}")
 
@@ -77,31 +102,42 @@ class YoloDetector:
         img = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         img = cv2.resize(img, (self._input_size, self._input_size))
         img = img.astype(np.float32) / 255.0
+        # Model ini minta NCHW [1, 3, H, W] (channel duluan), bukan NHWC
+        # [1, H, W, 3] seperti asumsi lama. HWC -> CHW dulu baru tambah axis batch.
+        img = np.transpose(img, (2, 0, 1))
         return np.expand_dims(img, axis=0)
 
     def _postprocess(self, output: np.ndarray) -> DetectionResult:
-        # YOLOv8n TFLite: [1, 84, 8400] -> transpose -> [8400, 84]
-        # cols 0-3: bbox, cols 4-83: COCO 80 class scores
-        detections = output[0].T
-        class_scores = detections[:, 4:]
+        # Model ini export dengan NMS sudah dibakar ke graph (end2end / nms=True),
+        # bukan output mentah [1, 84, 8400]. Bentuknya [1, 300, 6]: sampai 300
+        # deteksi, tiap baris = [x1, y1, x2, y2, confidence, class_id].
+        # Slot yang tidak terpakai biasanya diisi confidence=0, jadi aman
+        # untuk dilewati/dibiarkan (bakal kalah sama threshold di bawah).
+        detections = output[0]  # -> [300, 6]
 
-        person_conf = float(np.max(class_scores[:, PERSON_CLASS_ID]))
+        person_conf = 0.0
+        best_vehicle_conf, best_vehicle_id = 0.0, -1
+
+        for x1, y1, x2, y2, conf, class_id in detections:
+            conf = float(conf)
+            if conf <= 0.0:
+                continue
+            class_id = int(class_id)
+            if class_id == PERSON_CLASS_ID:
+                person_conf = max(person_conf, conf)
+            elif class_id in VEHICLE_CLASS_IDS and conf > best_vehicle_conf:
+                best_vehicle_conf, best_vehicle_id = conf, class_id
+
         logger.debug(f"Person conf: {person_conf:.3f}")
         if person_conf >= self._threshold:
             return DetectionResult(DetectionType.PERSON, "Manusia", person_conf)
 
-        best_conf, best_id = 0.0, -1
-        for cid in VEHICLE_CLASS_IDS:
-            conf = float(np.max(class_scores[:, cid]))
-            if conf > best_conf:
-                best_conf, best_id = conf, cid
-
-        logger.debug(f"Vehicle conf: {best_conf:.3f} class={best_id}")
-        if best_conf >= self._threshold:
+        logger.debug(f"Vehicle conf: {best_vehicle_conf:.3f} class={best_vehicle_id}")
+        if best_vehicle_conf >= self._threshold:
             return DetectionResult(
                 DetectionType.VEHICLE,
-                VEHICLE_LABELS.get(best_id, "Kendaraan"),
-                best_conf,
+                VEHICLE_LABELS.get(best_vehicle_id, "Kendaraan"),
+                best_vehicle_conf,
             )
 
         return DetectionResult(DetectionType.NONE)

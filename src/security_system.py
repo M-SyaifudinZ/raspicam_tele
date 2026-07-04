@@ -2,6 +2,7 @@ import logging
 import subprocess
 import threading
 import time
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 from typing import List, Optional
 
@@ -70,32 +71,48 @@ class SecuritySystem:
         self._executor.submit(self._process_detection, frame)
 
     def _process_detection(self, frame: LD2410Frame):
-        logger.info(f"Processing: {frame.state_label} @ {frame.detect_distance}cm")
-        img, path = self._camera.capture_and_save()
-        if img is None or path is None:
-            logger.error("Capture failed, skipping detection")
-            return
+        # NOTE: fungsi ini jalan di dalam ThreadPoolExecutor via .submit().
+        # Kalau exception di sini tidak ditangkap sendiri, exception itu akan
+        # HILANG DIAM-DIAM (tidak pernah tercetak di log) karena Future-nya
+        # tidak pernah di-.result() di manapun. Makanya seluruh isi fungsi
+        # dibungkus try/except supaya error aslinya selalu kelihatan di log.
+        try:
+            logger.info(f"Processing: {frame.state_label} @ {frame.detect_distance}cm")
+            t0 = time.monotonic()
+            img, path = self._camera.capture_and_save()
+            t1 = time.monotonic()
+            if img is None or path is None:
+                logger.error("Capture failed, skipping detection")
+                return
 
-        result: DetectionResult = self._detector.detect(img)
+            result: DetectionResult = self._detector.detect(img)
+            t2 = time.monotonic()
+            logger.info(f"Timing: capture={t1 - t0:.2f}s detect={t2 - t1:.2f}s")
 
-        if result.type == DetectionType.PERSON:
-            logger.warning(f"HUMAN DETECTED (conf={result.confidence:.2f})")
-            self._telegram.send_message(self._personal(), "⚠️ TERDETEKSI MANUSIA")
-            self._telegram.send_photo(self._personal(), path, caption="Deteksi manusia")
+            if result.type == DetectionType.PERSON:
+                logger.warning(f"HUMAN DETECTED (conf={result.confidence:.2f})")
+                self._telegram.send_message(self._personal(), "⚠️ TERDETEKSI MANUSIA")
+                self._telegram.send_photo(self._personal(), path, caption="Deteksi manusia")
 
-        elif result.type == DetectionType.VEHICLE:
-            logger.warning(f"VEHICLE DETECTED: {result.label} (conf={result.confidence:.2f})")
-            self._telegram.send_message(
-                self._personal(), f"🚗 TERDETEKSI KENDARAAN: {result.label}"
-            )
-            self._telegram.send_photo(
-                self._personal(), path, caption=f"Deteksi {result.label}"
-            )
+            elif result.type == DetectionType.VEHICLE:
+                logger.warning(f"VEHICLE DETECTED: {result.label} (conf={result.confidence:.2f})")
+                self._telegram.send_message(
+                    self._personal(), f"🚗 TERDETEKSI KENDARAAN: {result.label}"
+                )
+                self._telegram.send_photo(
+                    self._personal(), path, caption=f"Deteksi {result.label}"
+                )
 
-        else:
-            logger.info("Motion: bukan manusia atau kendaraan")
-            self._telegram.send_message(
-                self._personal(), "ℹ️ Ada gerak tapi bukan orang atau kendaraan"
+            else:
+                logger.info("Motion: bukan manusia atau kendaraan")
+                self._telegram.send_message(
+                    self._personal(), "ℹ️ Ada gerak tapi bukan orang atau kendaraan"
+                )
+
+        except Exception:
+            logger.error(
+                "Exception di _process_detection (sebelumnya hilang tanpa jejak):\n"
+                + traceback.format_exc()
             )
 
     # ── door alarm ───────────────────────────────────────────────────────────
