@@ -1,4 +1,5 @@
 import logging
+import subprocess
 import time
 from pathlib import Path
 from typing import Optional, Tuple
@@ -17,36 +18,65 @@ class Camera:
         self._height = height
         self._capture_dir = Path(capture_dir)
         self._capture_dir.mkdir(parents=True, exist_ok=True)
-        self._cap: Optional[cv2.VideoCapture] = None
+        self._opened = False
 
     def open(self):
-        self._cap = cv2.VideoCapture(self._device)
-        self._cap.set(cv2.CAP_PROP_FRAME_WIDTH, self._width)
-        self._cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self._height)
-        if not self._cap.isOpened():
-            raise RuntimeError(f"Cannot open camera device {self._device}")
-        logger.info(f"Camera opened at {self._width}x{self._height}")
+        try:
+            result = subprocess.run(
+                ["rpicam-hello", "--list-cameras"],
+                capture_output=True, text=True, timeout=10,
+            )
+            logger.debug(result.stdout)
+        except FileNotFoundError:
+            raise RuntimeError(
+                "rpicam-apps not found. Install with: sudo apt install -y rpicam-apps"
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError("Timed out checking for camera (rpicam-hello)")
+
+        self._opened = True
+        logger.info(f"Camera opened at {self._width}x{self._height} (via rpicam-still)")
 
     def _flush_buffer(self):
-        for _ in range(3):
-            self._cap.grab()
+        # No-op: rpicam-still captures fresh each call, no persistent buffer to flush.
+        pass
 
     def capture_and_save(self) -> Tuple[Optional[np.ndarray], Optional[str]]:
-        if self._cap is None:
+        if not self._opened:
             return None, None
-        self._flush_buffer()
-        ret, frame = self._cap.read()
-        if not ret or frame is None:
-            logger.error("Camera capture failed")
-            return None, None
+
         filename = f"capture_{int(time.time())}.jpg"
         path = str(self._capture_dir / filename)
-        cv2.imwrite(path, frame)
+
+        cmd = [
+            "rpicam-still",
+            "-o", path,
+            "--width", str(self._width),
+            "--height", str(self._height),
+            "--immediate",
+            "--nopreview",
+            "-n",  # no preview window
+            "--timeout", "1000",
+        ]
+        try:
+            result = subprocess.run(cmd, capture_output=True, timeout=15)
+        except subprocess.TimeoutExpired:
+            logger.error("Camera capture failed: rpicam-still timed out")
+            return None, None
+
+        if result.returncode != 0 or not Path(path).exists():
+            stderr = result.stderr.decode(errors="ignore").strip()
+            logger.error(f"Camera capture failed: {stderr}")
+            return None, None
+
+        frame = cv2.imread(path)
+        if frame is None:
+            logger.error("Camera capture failed: could not read saved image")
+            return None, None
+
         logger.debug(f"Saved: {path}")
         return frame, path
 
     def close(self):
-        if self._cap:
-            self._cap.release()
-            self._cap = None
-            logger.info("Camera closed")
+        self._opened = False
+        logger.info("Camera closed")

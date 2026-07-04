@@ -31,15 +31,15 @@ class GpioConfig:
 
 @dataclass
 class LD2410Config:
-    port: str = field(default_factory=lambda: os.getenv("LD2410_PORT", "/dev/ttyAMA0"))
+    port: str = field(default_factory=lambda: os.getenv("LD2410_PORT", "/ttyAMAO"))
     baudrate: int = field(default_factory=lambda: int(os.getenv("LD2410_BAUDRATE", 256000)))
 
 
 @dataclass
 class CameraConfig:
     device: int = field(default_factory=lambda: int(os.getenv("CAMERA_DEVICE", 0)))
-    width: int = field(default_factory=lambda: int(os.getenv("CAMERA_WIDTH", 1920)))
-    height: int = field(default_factory=lambda: int(os.getenv("CAMERA_HEIGHT", 1080)))
+    width: int = field(default_factory=lambda: int(os.getenv("CAMERA_WIDTH", 640)))
+    height: int = field(default_factory=lambda: int(os.getenv("CAMERA_HEIGHT", 480)))
 
 
 @dataclass
@@ -47,7 +47,7 @@ class DetectorConfig:
     model_path: str = field(default_factory=lambda: os.getenv("TFLITE_MODEL_PATH", "models/yolo.tflite"))
     input_size: int = 640
     confidence_threshold: float = field(
-        default_factory=lambda: float(os.getenv("DETECTION_CONFIDENCE", 0.5))
+        default_factory=lambda: float(os.getenv("DETECTION_CONFIDENCE", 0.1))
     )
 
 
@@ -57,7 +57,7 @@ class SystemConfig:
         default_factory=lambda: int(os.getenv("DOOR_ALARM_TIMEOUT_SEC", 60))
     )
     detection_cooldown_sec: int = field(
-        default_factory=lambda: int(os.getenv("DETECTION_COOLDOWN_SEC", 30))
+        default_factory=lambda: int(os.getenv("DETECTION_COOLDOWN_SEC", 10))
     )
     capture_dir: str = "captures"
     log_dir: str = "logs"
