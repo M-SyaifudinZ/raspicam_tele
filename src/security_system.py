@@ -11,6 +11,7 @@ from src.camera import Camera
 from src.detector import DetectionType, DetectionResult, YoloDetector
 from src.gpio_handler import GpioHandler
 from src.ld2410 import LD2410, LD2410Frame
+from src.emergency_poll import EmergencyPoll
 from src.telegram_client import TelegramClient
 
 logger = logging.getLogger(__name__)
@@ -22,10 +23,10 @@ class SecuritySystem:
         self._alarm_active = False
         self._door_timer: Optional[threading.Timer] = None
         self._last_detection_time = 0.0
+        self._last_vehicle_count = 0
         self._state_lock = threading.Lock()
         self._detect_lock = threading.Lock()
         self._executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="detect")
-
         self._telegram = TelegramClient(config.telegram.token)
         self._camera = Camera(
             device=config.camera.device,
@@ -49,7 +50,12 @@ class SecuritySystem:
             port=config.ld2410.port,
             baudrate=config.ld2410.baudrate,
         )
-
+        self._emergency = EmergencyPoll(
+            url=config.emergency.url,
+            device_id=config.emergency.device_id,
+            api_key=config.emergency.api_key,
+            poll_interval_sec=config.emergency.poll_interval_sec,
+        )
     # ── helpers ──────────────────────────────────────────────────────────────
 
     def _all_chats(self) -> List[str]:
@@ -89,6 +95,8 @@ class SecuritySystem:
             t2 = time.monotonic()
             logger.info(f"Timing: capture={t1 - t0:.2f}s detect={t2 - t1:.2f}s")
 
+            self._check_vehicle_count_change(result.vehicle_count)
+
             if result.type == DetectionType.PERSON:
                 logger.warning(f"HUMAN DETECTED (conf={result.confidence:.2f})")
                 self._telegram.send_message(self._personal(), "⚠️ TERDETEKSI MANUSIA")
@@ -113,6 +121,17 @@ class SecuritySystem:
             logger.error(
                 "Exception di _process_detection (sebelumnya hilang tanpa jejak):\n"
                 + traceback.format_exc()
+            )
+    def _check_vehicle_count_change(self, current_count: int):
+        with self._state_lock:
+            previous_count = self._last_vehicle_count
+            self._last_vehicle_count = current_count
+
+        if current_count < previous_count:
+            logger.warning(f"Kendaraan keluar terdeteksi: {previous_count} -> {current_count}")
+            self._telegram.send_message(
+                self._personal(),
+            f"🚗➡️ Kendaraan KELUAR terdeteksi ({previous_count} → {current_count})"
             )
 
     # ── door alarm ───────────────────────────────────────────────────────────
@@ -148,6 +167,16 @@ class SecuritySystem:
             "🚨 ALARM! Pintu terbuka lebih dari 1 menit tanpa respons!"
         )
 
+    def _on_emergency_broadcast(self, device: str):
+        logger.warning(f"Emergency broadcast diterima dari {device} -> sirine aktif")
+        self._gpio.siren_on()
+        with self._state_lock:
+            self._alarm_active = True
+        self._telegram.broadcast_message(
+            self._all_chats(),
+            f"🚨 EMERGENCY! Broadcast darurat dari {device}"
+        )
+
     def _cancel_alarm(self):
         with self._state_lock:
             if self._door_timer:
@@ -157,6 +186,9 @@ class SecuritySystem:
         self._gpio.siren_off()
         self._gpio.set_status_led(False)
         logger.info("Alarm cancelled")
+        if self._gpio.is_door_open:
+            logger.info("Pintu masih terbuka setelah /matialarm — timer dimulai ulang")
+            self._on_door_open()
 
     # ── telegram commands ────────────────────────────────────────────────────
 
@@ -201,8 +233,15 @@ class SecuritySystem:
         self._gpio.set_door_callbacks(self._on_door_open, self._on_door_close)
         self._gpio.set_bypass_callback(self._cancel_alarm)
 
+        if self._gpio.is_door_open:
+            logger.warning("Pintu sudah terbuka saat startup — memulai timer")
+            self._on_door_open()
+
         self._ld2410.set_motion_callback(self._on_motion)
         self._ld2410.start()
+
+        self._emergency.set_emergency_callback(self._on_emergency_broadcast)
+        self._emergency.start()
 
         self._telegram.register_command("/matialarm", self._cmd_matialarm)
         self._telegram.register_command("/status", self._cmd_status)
@@ -216,6 +255,7 @@ class SecuritySystem:
     def stop(self):
         logger.info("Stopping SecuritySystem...")
         self._ld2410.stop()
+        self._emergency.stop()
         self._telegram.stop_polling()
         self._executor.shutdown(wait=False)
         self._camera.close()

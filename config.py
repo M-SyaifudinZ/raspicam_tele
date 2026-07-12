@@ -50,6 +50,12 @@ class DetectorConfig:
         default_factory=lambda: float(os.getenv("DETECTION_CONFIDENCE", 0.1))
     )
 
+@dataclass
+class EmergencyConfig:
+    url: str = field(default_factory=lambda: os.getenv("EMERGENCY_URL", "192.168.100.90:5000/emergency"))
+    device_id: str = field(default_factory=lambda: os.getenv("DEVICE_ID" , "device:2"))
+    api_key: str = field(default_factory=lambda: os.getenv("EMERGENCY_API_KEY", ""))
+    poll_interval_sec: float = field(default_factory=lambda: float(os.getenv("EMERGENCY_POLL_INTERVAL_SEC", 2)))
 
 @dataclass
 class SystemConfig:
@@ -71,6 +77,7 @@ class AppConfig:
     camera: CameraConfig = field(default_factory=CameraConfig)
     detector: DetectorConfig = field(default_factory=DetectorConfig)
     system: SystemConfig = field(default_factory=SystemConfig)
+    emergency: EmergencyConfig = field(default_factory=EmergencyConfig)
 
 
 CONFIG = AppConfig()

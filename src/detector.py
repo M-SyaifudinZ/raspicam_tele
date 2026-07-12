@@ -45,7 +45,7 @@ class DetectionResult:
     type: DetectionType
     label: str = ""
     confidence: float = 0.0
-
+    vehicle_count: int = 0
 
 class YoloDetector:
     def __init__(self, model_path: str, input_size: int = 640,
@@ -117,7 +117,7 @@ class YoloDetector:
 
         person_conf = 0.0
         best_vehicle_conf, best_vehicle_id = 0.0, -1
-
+        vehicle_count = 0 
         for x1, y1, x2, y2, conf, class_id in detections:
             conf = float(conf)
             if conf <= 0.0:
@@ -125,9 +125,11 @@ class YoloDetector:
             class_id = int(class_id)
             if class_id == PERSON_CLASS_ID:
                 person_conf = max(person_conf, conf)
-            elif class_id in VEHICLE_CLASS_IDS and conf > best_vehicle_conf:
-                best_vehicle_conf, best_vehicle_id = conf, class_id
-
+            elif class_id in VEHICLE_CLASS_IDS:
+                if conf >= self._threshold:
+                    vehicle_count += 1   # ← tambahan: hitung semua yang lolos threshold
+                if conf > best_vehicle_conf:
+                    best_vehicle_conf, best_vehicle_id = conf, class_id
         logger.debug(f"Person conf: {person_conf:.3f}")
         if person_conf >= self._threshold:
             return DetectionResult(DetectionType.PERSON, "Manusia", person_conf)
@@ -140,4 +142,4 @@ class YoloDetector:
                 best_vehicle_conf,
             )
 
-        return DetectionResult(DetectionType.NONE)
+        return DetectionResult(DetectionType.NONE, vehicle_count=vehicle_count)
