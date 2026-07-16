@@ -55,7 +55,7 @@ class GpioHandler:
     def _door_cb(self, channel):
         if not _GPIO_OK:
             return
-        is_open = GPIO.input(self._pin_door) == GPIO.HIGH
+        is_open = GPIO.input(self._pin_door) == GPIO.LOW
         if is_open and self._on_door_open:
             self._on_door_open()
         elif not is_open and self._on_door_close:
@@ -68,7 +68,7 @@ class GpioHandler:
     @property
     def is_door_open(self) -> bool:
         if _GPIO_OK:
-            return GPIO.input(self._pin_door) == GPIO.HIGH
+            return GPIO.input(self._pin_door) == GPIO.LOW
         return False
 
     @property
